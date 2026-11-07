@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui_plot::{BoxElem, BoxPlot, BoxSpread, Plot};
@@ -10,9 +10,15 @@ use itertools::Itertools;
 
 type Samples = VecDeque<Sample>;
 
+struct WaveLayer {
+    sin: f64,
+    cos: f64,
+    frequency: f64,
+}
+
 #[derive(Clone, Copy)]
 struct Sample {
-    time: f64,
+    time: Instant,
     value: f64,
 }
 
@@ -25,10 +31,9 @@ impl App {
     fn new(samples: Arc<Mutex<Samples>>, paused: Arc<Mutex<bool>>) -> Self {
         Self { samples, paused }
     }
-
-    // xorshift64: tiny dependency-free random numbers in [-1, 1]
 }
 
+// xorshift64: tiny dependency-free random numbers in [-1, 1]
 fn next_noise(rng: &mut u64) -> f64 {
     *rng ^= *rng << 13;
     *rng ^= *rng >> 7;
@@ -36,13 +41,25 @@ fn next_noise(rng: &mut u64) -> f64 {
     (*rng as f64 / u64::MAX as f64) * 2.0 - 1.0
 }
 
-fn push_sample(rng: &mut u64, samples: &mut Samples) {
+fn push_sample(rng: &mut u64, samples: &mut Samples, wave_layers: &[WaveLayer]) {
     let t = samples.len() as f64;
-    let n = next_noise(rng);
-    samples.push_back(Sample {
-        time: t,
-        value: (t * 0.001).sin() + (n * 0.5) + (t * 0.001 * ((1.0 + 5.0f64.sqrt()) / 2.0)).cos(),
-    });
+    let noise = next_noise(rng);
+    let fractalized: f64 = wave_layers
+        .iter()
+        .map(
+            |&WaveLayer {
+                 sin,
+                 cos,
+                 frequency,
+             }| ((t * frequency).sin() * sin) + ((t * frequency).cos() * cos),
+        )
+        .sum();
+    let sample = Sample {
+        time: Instant::now(),
+        value: fractalized + (noise * 42.067),
+    };
+    println!("{:?}: {}", sample.time, sample.value);
+    samples.push_back(sample);
 }
 
 impl eframe::App for App {
@@ -61,7 +78,7 @@ impl eframe::App for App {
             });
 
             let range = samples.len().saturating_sub(67_000_000)..samples.len();
-            let size = range.clone().count() / 42;
+            let size = range.clone().count() / 67;
             let samples = samples
                 .range(range)
                 .chunks(size + 1)
@@ -140,12 +157,21 @@ fn main() -> eframe::Result {
     let thread_paused: Arc<Mutex<bool>> = paused.clone();
     thread::spawn(move || {
         let mut rng: u64 = 0x2545F4914F6CDD1D;
+        let growth = (1.0 + 5f64.sqrt()) / 2.0;
+        let small_phi = (1.0 - 5f64.sqrt()) / 2.0;
+        let wave_layers = (0..10)
+            .map(|index| WaveLayer {
+                sin: next_noise(&mut rng) * growth.powi(index),
+                cos: next_noise(&mut rng) * growth.powi(index),
+                frequency: small_phi.powi(index) * 0.1,
+            })
+            .collect_vec();
         loop {
             {
                 if !thread_paused.lock().unwrap().deref() {
                     let mut samples = samples.lock().unwrap();
-                    for _ in 0..100 {
-                        push_sample(&mut rng, &mut samples);
+                    for _ in 0..10 {
+                        push_sample(&mut rng, &mut samples, &wave_layers);
                     }
                 }
             }
