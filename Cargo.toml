@@ -1,0 +1,17 @@
+[package]
+name = "egui_live"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Same eframe version and glow (OpenGL) backend as your working icon_creator project.
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+# egui_plot 0.37 is the release built against egui 0.36.
+egui_plot = "0.37"
+itertools = "0.15.0"
+rayon = "1.12.0"
+
+[profile.dev]
+opt-level = 2
+[profile.release]
+debug = true
