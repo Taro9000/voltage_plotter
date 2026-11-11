@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use egui_plot::{BoxElem, BoxPlot, BoxSpread, Plot};
+use egui_plot::{BoxElem, BoxPlot, BoxSpread, Line, Plot, PlotPoint, PlotPoints};
 use itertools::Itertools;
 
 type Samples = VecDeque<Sample>;
@@ -58,7 +58,7 @@ fn push_sample(rng: &mut u64, samples: &mut Samples, wave_layers: &[WaveLayer]) 
         time: Instant::now(),
         value: fractalized + (noise * 42.067),
     };
-    println!("{:?}: {}", sample.time, sample.value);
+    // println!("{:?}: {}", sample.time, sample.value);
     samples.push_back(sample);
 }
 
@@ -67,7 +67,34 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
 
         egui::CentralPanel::default().show(ui, |ui| {
-            let samples = { self.samples.lock().unwrap().clone() };
+            let mut samples = { self.samples.lock().unwrap().clone() };
+            let offset = samples.len().saturating_sub(100000);
+            let samples = samples.split_off(offset);
+            struct RegressionAccumulators {
+                x: f64,
+                y: f64,
+                xy: f64,
+                x_2: f64,
+            }
+            // TODO: Use actual time stamps instead of indices
+            let RegressionAccumulators { x, y, xy, x_2 } = samples.iter().enumerate().fold(
+                RegressionAccumulators {
+                    x: 0.0,
+                    y: 0.0,
+                    xy: 0.0,
+                    x_2: 0.0,
+                },
+                |accumulator, (x, &Sample { value: y, .. })| RegressionAccumulators {
+                    x: accumulator.x + (x + offset) as f64,
+                    y: accumulator.y + y,
+                    xy: accumulator.xy + ((x + offset) as f64 * y),
+                    x_2: accumulator.x_2 + (((x + offset) as f64).powi(2)),
+                },
+            );
+            let n = samples.len() as f64;
+            let slope = (y * x - (n * xy)) / (x * x - (n * x_2));
+            let height = (y - (x * slope)) / n;
+            // println!("{height} + {slope}x");
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.paused.lock().unwrap(), "Pause");
                 ui.label(format!(
@@ -118,7 +145,7 @@ impl eframe::App for App {
                     ) {
                         Some(
                             BoxElem::new(
-                                ((index * 2 + 1) * size) as f64 / 2.0,
+                                ((index * 2 + 1) * size) as f64 / 2.0 + offset as f64,
                                 BoxSpread::new(
                                     lower_whisker,
                                     lower_quartile,
@@ -136,12 +163,19 @@ impl eframe::App for App {
                 .collect_vec();
             Plot::new("live_plot")
                 .legend(egui_plot::Legend::default())
-                .include_y(-2.0)
-                .include_y(2.0)
+                // .include_y(-2.0)
+                // .include_y(2.0)
                 .allow_zoom(true)
                 .allow_drag(true)
                 .show(ui, |plot_ui| {
-                    plot_ui.box_plot(BoxPlot::new("sin(2t)", samples));
+                    plot_ui.box_plot(BoxPlot::new("data", samples));
+                    plot_ui.line(Line::new(
+                        "linear regression",
+                        PlotPoints::new(vec![
+                            [offset as f64, offset as f64 * slope + height],
+                            [n + offset as f64, (n + offset as f64) * slope + height],
+                        ]),
+                    ));
                 });
         });
 
@@ -159,11 +193,11 @@ fn main() -> eframe::Result {
         let mut rng: u64 = 0x2545F4914F6CDD1D;
         let growth = (1.0 + 5f64.sqrt()) / 2.0;
         let small_phi = (1.0 - 5f64.sqrt()) / 2.0;
-        let wave_layers = (0..10)
+        let wave_layers = (0..30)
             .map(|index| WaveLayer {
-                sin: next_noise(&mut rng) * growth.powi(index),
-                cos: next_noise(&mut rng) * growth.powi(index),
-                frequency: small_phi.powi(index) * 0.1,
+                sin: next_noise(&mut rng) * growth.powi(index / 2),
+                cos: next_noise(&mut rng) * growth.powi(2 * index),
+                frequency: small_phi.powi(2 * index) * 0.01,
             })
             .collect_vec();
         loop {
