@@ -1,3 +1,5 @@
+mod driver;
+
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
@@ -5,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use egui_plot::{BoxElem, BoxPlot, BoxSpread, Line, Plot, PlotPoint, PlotPoints};
+use egui_plot::{BoxElem, BoxPlot, BoxSpread, Line, Plot, PlotPoints};
 use itertools::Itertools;
 
 type Samples = VecDeque<Sample>;
@@ -200,10 +202,13 @@ fn main() -> eframe::Result {
                 frequency: small_phi.powi(2 * index) * 0.01,
             })
             .collect_vec();
+        let mut state = driver::State::SearchingPorts;
+        println!("Data collector driver starting...");
         loop {
             {
+                let mut samples = samples.lock().unwrap();
+                state = state.iterate(&mut samples);
                 if !thread_paused.lock().unwrap().deref() {
-                    let mut samples = samples.lock().unwrap();
                     for _ in 0..10 {
                         push_sample(&mut rng, &mut samples, &wave_layers);
                     }
