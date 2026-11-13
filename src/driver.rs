@@ -1,5 +1,8 @@
+use csv::Writer;
 use serial2::SerialPort;
+use std::fs::File;
 use std::io::{BufReader, Read};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{array, thread};
 
@@ -19,11 +22,11 @@ fn read_with_timeout(port: &mut BuffReader<SerialPort>, timeout: Duration) -> Ve
 
 pub enum State {
     SearchingPorts,
-    HandleCommands([u8; 5], BuffReader<SerialPort>),
+    HandleCommands(Instant, [u8; 5], BuffReader<SerialPort>),
 }
 
 impl State {
-    fn searching_ports() -> Self {
+    pub fn searching_ports(paused: &Mutex<bool>) -> Self {
         thread::sleep(Duration::from_millis(100));
         let ports = match SerialPort::available_ports() {
             Ok(ports) => ports,
@@ -62,7 +65,8 @@ impl State {
                     let needle = b"Indeed, master.";
                     if line.windows(needle.len()).any(|window| window == needle) {
                         println!("Succesfully connected to {port_info:?}");
-                        return Self::HandleCommands([0; 5], port);
+                        *paused.lock().unwrap() = true;
+                        return Self::HandleCommands(Instant::now(), [0; 5], port);
                     }
                     println!(
                         "Not a remote presentation control WiFi LoRa 32 V3 receiver \
@@ -74,15 +78,18 @@ impl State {
         }
         Self::SearchingPorts
     }
-    fn handle_commands(
+    pub fn handle_commands(
+        beginning: Instant,
         mut window: [u8; 5],
         mut port: BuffReader<SerialPort>,
-        samples: &mut Samples,
+        samples: &Mutex<Samples>,
+        paused: &Mutex<bool>,
+        file: &mut Writer<File>,
     ) -> Self {
         let mut byte = [0; 1];
         match port.read(&mut byte) {
             Ok(1) => {}
-            Ok(_) => return Self::HandleCommands(window, port),
+            Ok(_) => return Self::HandleCommands(beginning, window, port),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 // println!("Time out!");
             }
@@ -102,19 +109,35 @@ impl State {
 
         if let [b'\t', first, b'\t', last, b'\n'] = window {
             let reading = u16::from_ne_bytes([first, last]);
-            samples.push_back(Sample {
-                time: Instant::now(),
-                value: reading as f64,
-            });
+            if !*paused.lock().unwrap() {
+                let time = beginning.elapsed().as_micros();
+                file.serialize((time, reading)).unwrap();
+                samples.lock().unwrap().push_back(Sample {
+                    _time: time,
+                    value: reading as f64,
+                });
+            }
             println!("{reading}");
         }
-        Self::HandleCommands(window, port)
+        Self::HandleCommands(beginning, window, port)
     }
-    pub fn iterate(self, samples: &mut Samples) -> Self {
+    pub fn iterate(
+        self,
+        samples: &Mutex<Samples>,
+        paused: &Mutex<bool>,
+        file: &mut Writer<File>,
+    ) -> Self {
         match self {
-            Self::SearchingPorts => Self::searching_ports(),
-            Self::HandleCommands(window, serial_port_informations) => {
-                Self::handle_commands(window, serial_port_informations, samples)
+            Self::SearchingPorts => Self::searching_ports(paused),
+            Self::HandleCommands(beginning, window, serial_port_informations) => {
+                Self::handle_commands(
+                    beginning,
+                    window,
+                    serial_port_informations,
+                    samples,
+                    paused,
+                    file,
+                )
             }
         }
     }

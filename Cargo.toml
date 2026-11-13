@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+csv = "1.4.0"
 # Same eframe version and glow (OpenGL) backend as your working icon_creator project.
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 # egui_plot 0.37 is the release built against egui 0.36.
