@@ -1,5 +1,3 @@
-mod driver;
-
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -10,21 +8,14 @@ use std::time::Duration;
 
 use csv::Writer;
 use eframe::egui;
+use egui_live::{Sample, Samples, driver};
 use egui_plot::{BoxElem, BoxPlot, BoxSpread, Line, Plot, PlotPoints};
 use itertools::Itertools;
-
-type Samples = VecDeque<Sample>;
 
 struct WaveLayer {
     sin: f64,
     cos: f64,
     frequency: f64,
-}
-
-#[derive(Clone, Copy)]
-struct Sample {
-    _time: u128,
-    value: f64,
 }
 
 struct App {
@@ -210,7 +201,7 @@ impl eframe::App for App {
 fn choose_file() -> Writer<File> {
     let mut attempt = 0usize;
     Writer::from_writer(loop {
-        match File::create_new(format!("readings{attempt}")) {
+        match File::create_new(format!("readings{attempt}.csv")) {
             Ok(file) => break file,
             Err(error) => {
                 if let ErrorKind::AlreadyExists = error.kind() {
