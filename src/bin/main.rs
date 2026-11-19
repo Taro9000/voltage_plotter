@@ -52,7 +52,7 @@ fn push_sample(rng: &mut u64, samples: &mut Samples, wave_layers: &[WaveLayer]) 
         )
         .sum();
     let sample = Sample {
-        _time: samples.len() as u128,
+        time: samples.len() as u128,
         value: fractalized + (noise * 42.067),
     };
     // println!("{:?}: {}", sample.time, sample.value);

@@ -113,7 +113,7 @@ impl State {
                 let time = beginning.elapsed().as_micros();
                 file.serialize((time, reading)).unwrap();
                 samples.lock().unwrap().push_back(Sample {
-                    _time: time,
+                    time,
                     value: reading as f64,
                 });
             }

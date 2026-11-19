@@ -1,62 +1,33 @@
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{ErrorKind, Read};
 // use std::ops::Deref;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
-use csv::{Reader, Writer};
+use csv::Reader;
 use eframe::egui;
-use egui_live::{Sample, Samples, driver};
-use egui_plot::{BoxElem, BoxPlot, BoxSpread, Line, Plot, PlotPoints, Points};
+use egui_live::{Sample, Samples};
+use egui_plot::{Corner, Line, Plot, Span, VLine};
 use itertools::Itertools;
 
-struct WaveLayer {
-    sin: f64,
-    cos: f64,
-    frequency: f64,
-}
-
 struct App {
-    samples: Arc<Mutex<Samples>>,
-    paused: Arc<Mutex<bool>>,
+    samples: Samples,
+    pre_samples: Samples,
+    // change: Samples,
+    paused: bool,
 }
 
 impl App {
-    fn new(samples: Arc<Mutex<Samples>>, paused: Arc<Mutex<bool>>) -> Self {
-        Self { samples, paused }
+    fn new(
+        samples: Samples,
+        pre_samples: Samples,
+        /* change: Samples , */ paused: bool,
+    ) -> Self {
+        Self {
+            samples,
+            pre_samples,
+            // change,
+            paused,
+        }
     }
-}
-
-// xorshift64: tiny dependency-free random numbers in [-1, 1]
-fn next_noise(rng: &mut u64) -> f64 {
-    *rng ^= *rng << 13;
-    *rng ^= *rng >> 7;
-    *rng ^= *rng << 17;
-    (*rng as f64 / u64::MAX as f64) * 2.0 - 1.0
-}
-
-#[expect(dead_code)]
-fn push_sample(rng: &mut u64, samples: &mut Samples, wave_layers: &[WaveLayer]) {
-    let t = samples.len() as f64;
-    let noise = next_noise(rng);
-    let fractalized: f64 = wave_layers
-        .iter()
-        .map(
-            |&WaveLayer {
-                 sin,
-                 cos,
-                 frequency,
-             }| ((t * frequency).sin() * sin) + ((t * frequency).cos() * cos),
-        )
-        .sum();
-    let sample = Sample {
-        _time: samples.len() as u128,
-        value: fractalized + (noise * 42.067),
-    };
-    // println!("{:?}: {}", sample.time, sample.value);
-    samples.push_back(sample);
 }
 
 struct LinearRegression {
@@ -64,7 +35,7 @@ struct LinearRegression {
     height: f64,
 }
 impl LinearRegression {
-    pub fn from_samples(samples: &Samples, offset: usize) -> Self {
+    pub fn from_samples(samples: &Samples) -> Self {
         struct RegressionAccumulators {
             x: f64,
             y: f64,
@@ -72,18 +43,18 @@ impl LinearRegression {
             x_2: f64,
         }
         // TODO: Use actual time stamps instead of indices
-        let RegressionAccumulators { x, y, xy, x_2 } = samples.iter().enumerate().fold(
+        let RegressionAccumulators { x, y, xy, x_2 } = samples.iter().fold(
             RegressionAccumulators {
                 x: 0.0,
                 y: 0.0,
                 xy: 0.0,
                 x_2: 0.0,
             },
-            |accumulator, (x, &Sample { value: y, .. })| RegressionAccumulators {
-                x: accumulator.x + (x + offset) as f64,
+            |accumulator, &Sample { value: y, time: x }| RegressionAccumulators {
+                x: accumulator.x + x as f64,
                 y: accumulator.y + y,
-                xy: accumulator.xy + ((x + offset) as f64 * y),
-                x_2: accumulator.x_2 + (((x + offset) as f64).powi(2)),
+                xy: accumulator.xy + (x as f64 * y),
+                x_2: accumulator.x_2 + (x as f64).powi(2),
             },
         );
         let n = samples.len() as f64;
@@ -102,13 +73,19 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
 
         egui::CentralPanel::default().show(ui, |ui| {
-            let mut samples = { self.samples.lock().unwrap().clone() };
+            let samples = &mut self.samples;
+            let pre_samples = &mut self.pre_samples;
+            // let change = &mut self.change;
             let offset = samples.len().saturating_sub(1_000_000);
-            let samples = samples.split_off(offset);
-            let n = samples.len() as f64;
-            let regression = LinearRegression::from_samples(&samples, offset);
+            let pre_offset = pre_samples.len().saturating_sub(1_000_000);
+            // let change_offset = change.len().saturating_sub(1_000_000);
+            let samples = samples.clone().split_off(offset);
+            let pre_samples = pre_samples.clone().split_off(pre_offset);
+            // let change = change.clone().split_off(change_offset);
+            let regression = LinearRegression::from_samples(&samples);
+            // let pre_regression = LinearRegression::from_samples(&pre_samples);
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.paused.lock().unwrap(), "Pause");
+                ui.checkbox(&mut self.paused, "Pause");
                 ui.label(format!(
                     "{} points/series | {:.0} fps",
                     samples.len(),
@@ -118,26 +95,60 @@ impl eframe::App for App {
 
             let samples = samples
                 .into_iter()
-                .enumerate()
-                .map(|(index, Sample { _time, value })| [(index + offset) as f64, value])
+                .map(|Sample { time, value }| [time as f64, value])
                 .collect_vec();
+
+            let pre_samples = pre_samples
+                .into_iter()
+                .map(|Sample { time, value }| [time as f64, value])
+                .collect_vec();
+
+            /*let change = change
+            .into_iter()
+            .map(|Sample { time, value }| [time as f64, value])
+            .collect_vec();*/
             Plot::new("live_plot")
-                .legend(egui_plot::Legend::default())
+                .legend(egui_plot::Legend::default().position(Corner::LeftTop))
                 // .include_y(-2.0)
                 // .include_y(2.0)
+                .y_axis_label("Voltaje (mV)")
+                .x_axis_label("Tiempo (μs)")
                 .allow_zoom(true)
                 .allow_drag(true)
                 .show(ui, |plot_ui| {
-                    plot_ui.line(Line::new("data", samples));
+                    if plot_ui.response().clicked() {
+                        println!("Clicked at: {:?}", plot_ui.pointer_coordinate());
+                    }
+                    // plot_ui.line(Line::new("Cambio Capa 1", change));
+                    plot_ui.vline(
+                        VLine::new("Primeros valores atípicos", 405330000)
+                            .style(egui_plot::LineStyle::Dotted { spacing: 5.0 }),
+                    );
+                    plot_ui.vline(VLine::new("Primer salto abrupto", 757922000));
+                    plot_ui.span(Span::new(
+                        "Aumento en comportamiento errático",
+                        1174124000.0..=1337040000.0,
+                    ));
+                    plot_ui.span(Span::new("Secado del sensor", 1345600000.0..=1379516000.0));
+                    plot_ui.span(Span::new("Corto circuito", 2518832000.0..=2644900000.0));
+                    plot_ui.vline(VLine::new("Retirada del sensor", 2644900000.0));
+                    plot_ui.line(Line::new("Capa 1", pre_samples.clone()));
+
+                    plot_ui.vline(VLine::new("Pequeño salto", 2057708386.1702898));
+                    plot_ui.line(Line::new("Capa 3", samples.clone()));
+                    /*plot_ui.line(Line::new(
+                        "Primera regresión linear",
+                        pre_samples
+                            .into_iter()
+                            .map(|[x, _]| [x, pre_regression.predict_y_at_x(x)])
+                            .collect_vec(),
+                    ));*/
                     plot_ui.line(Line::new(
-                        "linear regression",
-                        PlotPoints::new(vec![
-                            [offset as f64, regression.predict_y_at_x(offset as f64)],
-                            [
-                                n + offset as f64,
-                                regression.predict_y_at_x(n + offset as f64),
-                            ],
-                        ]),
+                        "Regresión linear",
+                        samples
+                            .into_iter()
+                            .map(|[x, _]| [x, regression.predict_y_at_x(x)])
+                            .collect_vec(),
                     ));
                 });
         });
@@ -147,21 +158,80 @@ impl eframe::App for App {
     }
 }
 
-fn choose_file() -> Reader<File> {
-    Reader::from_reader(File::open("FirstSampleReadings.csv").unwrap())
+fn choose_file(name: &'static str) -> Reader<File> {
+    Reader::from_reader(File::open(name).unwrap())
 }
 
 fn main() -> eframe::Result {
-    let mut file = choose_file();
-    let samples: Arc<Mutex<Samples>> = Arc::new(Mutex::new(VecDeque::from_iter(
-        file.records()
+    let samples: Samples = VecDeque::from_iter(
+        choose_file("SecondSampleReadings.csv")
+            .records()
             .flat_map(|record| record.ok())
             .map(|record| record.deserialize(None))
             .flat_map(|record| record.ok()),
-    )));
-    let paused: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
-    let thread_samples = samples.clone();
-    let thread_paused: Arc<Mutex<bool>> = paused.clone();
+    );
+    let offset = samples[0].time;
+    let mut samples = samples.into_iter();
+    samples.next_back(); // last element is almost always cut off
+    let samples: Samples = samples
+        .map(|Sample { time, value }| Sample {
+            time: (time - offset), // * (2714889524 - 15481308) / (2569662478 - 318672035),
+            value, // : (value - 700.0) * (1813.0 - 700.0) / (1489.0 - 700.0) + 700.0,
+        })
+        .collect();
+
+    for [
+        &Sample {
+            time: time_a,
+            value: value_a,
+        },
+        &Sample {
+            time: time_b,
+            value: value_b,
+        },
+    ] in samples.iter().array_windows()
+    {
+        let difference = value_b - value_a;
+        if difference.abs() > 2.5 {
+            println!("Found a difference of: {difference} from {time_a} μs to {time_b} μs.");
+        }
+    }
+    let pre_samples: Samples = VecDeque::from_iter(
+        choose_file("FirstSampleReadings.csv")
+            .records()
+            .flat_map(|record| record.ok())
+            .map(|record| record.deserialize(None))
+            .flat_map(|record| record.ok()),
+    );
+    let offset = pre_samples[0].time;
+    let mut pre_samples = pre_samples.into_iter();
+    pre_samples.next_back(); // last element is almost always cut off
+    let pre_samples: Samples = pre_samples
+        .map(|Sample { time, value }| Sample {
+            time: time - offset,
+            value,
+        })
+        .collect();
+    /* let change = pre_samples
+    .iter()
+    .array_windows()
+    .map(
+        |[
+            &Sample {
+                time: time_a,
+                value: value_a,
+            },
+            &Sample {
+                time: time_b,
+                value: value_b,
+            },
+        ]| Sample {
+            time: (time_a + time_b) / 2,
+            value: value_b - value_a,
+        },
+    )
+    .collect();*/
+    let paused: bool = true;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 500.0]),
         ..Default::default()
@@ -169,6 +239,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "egui_plot live",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new(thread_samples, paused)))),
+        Box::new(|_cc| {
+            Ok(Box::new(App::new(
+                samples,
+                pre_samples,
+                /* change, */ paused,
+            )))
+        }),
     )
 }
