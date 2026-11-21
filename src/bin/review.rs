@@ -1,31 +1,31 @@
-use std::collections::VecDeque;
 use std::fs::File;
+use std::{collections::VecDeque, ops::RangeInclusive};
 // use std::ops::Deref;
 
 use csv::Reader;
-use eframe::egui;
+use eframe::egui::{self, Key};
+use egui::Theme;
 use egui_live::{Sample, Samples};
-use egui_plot::{Corner, Line, Plot, Span, VLine};
+use egui_plot::{Corner, Line, Plot, Polygon, VLine};
+use egui_svg::EguiSvg;
 use itertools::Itertools;
 
 struct App {
     samples: Samples,
     pre_samples: Samples,
     // change: Samples,
-    paused: bool,
 }
 
 impl App {
     fn new(
         samples: Samples,
         pre_samples: Samples,
-        /* change: Samples , */ paused: bool,
+        /* change: Samples , */
     ) -> Self {
         Self {
             samples,
             pre_samples,
             // change,
-            paused,
         }
     }
 }
@@ -68,11 +68,23 @@ impl LinearRegression {
     }
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
+fn new_span(
+    name: impl ToString,
+    span: RangeInclusive<f64>,
+    size: RangeInclusive<f64>,
+) -> Polygon<'static> {
+    Polygon::new(vec![
+        [*span.start(), *size.start()],
+        [*span.start(), *size.end()],
+        [*span.end(), *size.end()],
+        [*span.end(), *size.start()],
+    ])
+    .name(name)
+}
 
-        egui::CentralPanel::default().show(ui, |ui| {
+impl App {
+    fn draw(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
             let samples = &mut self.samples;
             let pre_samples = &mut self.pre_samples;
             // let change = &mut self.change;
@@ -84,14 +96,6 @@ impl eframe::App for App {
             // let change = change.clone().split_off(change_offset);
             let regression = LinearRegression::from_samples(&samples);
             // let pre_regression = LinearRegression::from_samples(&pre_samples);
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.paused, "Pause");
-                ui.label(format!(
-                    "{} points/series | {:.0} fps",
-                    samples.len(),
-                    1.0 / ctx.input(|i| i.stable_dt).max(1e-6)
-                ));
-            });
 
             let samples = samples
                 .into_iter()
@@ -111,7 +115,7 @@ impl eframe::App for App {
                 .legend(egui_plot::Legend::default().position(Corner::LeftTop))
                 // .include_y(-2.0)
                 // .include_y(2.0)
-                .y_axis_label("Voltaje (mV)")
+                .y_axis_label("") // "Voltaje (mV)")
                 .x_axis_label("Tiempo (μs)")
                 .allow_zoom(true)
                 .allow_drag(true)
@@ -121,21 +125,41 @@ impl eframe::App for App {
                     }
                     // plot_ui.line(Line::new("Cambio Capa 1", change));
                     plot_ui.vline(
-                        VLine::new("Primeros valores atípicos", 405330000)
+                        VLine::new(405330000)
+                            .name("Primeros valores atípicos")
                             .style(egui_plot::LineStyle::Dotted { spacing: 5.0 }),
                     );
-                    plot_ui.vline(VLine::new("Primer salto abrupto", 757922000));
-                    plot_ui.span(Span::new(
+                    plot_ui.vline(VLine::new(757922000).name("Primer salto abrupto"));
+                    plot_ui.polygon(new_span(
                         "Aumento en comportamiento errático",
                         1174124000.0..=1337040000.0,
+                        1245.155356500963..=1824.9181931636215,
                     ));
-                    plot_ui.span(Span::new("Secado del sensor", 1345600000.0..=1379516000.0));
-                    plot_ui.span(Span::new("Corto circuito", 2518832000.0..=2644900000.0));
-                    plot_ui.vline(VLine::new("Retirada del sensor", 2644900000.0));
-                    plot_ui.line(Line::new("Capa 1", pre_samples.clone()));
+                    plot_ui.polygon(new_span(
+                        "Secado del sensor",
+                        1345600000.0..=1379516000.0,
+                        1704.6579814727043..=1353.5051562594435,
+                    ));
+                    plot_ui.polygon(new_span(
+                        "Corto circuito",
+                        2518832000.0..=2644900000.0,
+                        2800.0..=3153.1634168729142,
+                    ));
+                    plot_ui.vline(VLine::new(2644900000.0).name("Retirada del sensor"));
 
-                    plot_ui.vline(VLine::new("Pequeño salto", 2057708386.1702898));
-                    plot_ui.line(Line::new("Capa 3", samples.clone()));
+                    plot_ui.vline(VLine::new(2057708386.1702898).name("Pequeño salto"));
+
+                    plot_ui.line(
+                        Line::new(
+                            samples
+                                .iter()
+                                .map(|&[x, _]| [x, regression.predict_y_at_x(x)])
+                                .collect_vec(),
+                        )
+                        .name("Regresión linear"),
+                    );
+                    plot_ui.line(Line::new(pre_samples.clone()).name("Capa 1"));
+                    plot_ui.line(Line::new(samples).name("Capa 3"));
                     /*plot_ui.line(Line::new(
                         "Primera regresión linear",
                         pre_samples
@@ -143,15 +167,26 @@ impl eframe::App for App {
                             .map(|[x, _]| [x, pre_regression.predict_y_at_x(x)])
                             .collect_vec(),
                     ));*/
-                    plot_ui.line(Line::new(
-                        "Regresión linear",
-                        samples
-                            .into_iter()
-                            .map(|[x, _]| [x, regression.predict_y_at_x(x)])
-                            .collect_vec(),
-                    ));
                 });
         });
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.key_pressed(Key::E)) {
+            std::fs::write(
+                "graph.svg",
+                EguiSvg::new(680, 750).run(|ctx| {
+                    // ctx.set_pixels_per_point(30.0);
+                    ctx.set_theme(Theme::Light);
+                    self.draw(ctx);
+                }),
+            )
+            .unwrap();
+        }
+
+        self.draw(ctx);
 
         // Redraw continuously for real-time updates.
         ctx.request_repaint();
@@ -243,7 +278,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(App::new(
                 samples,
                 pre_samples,
-                /* change, */ paused,
+                /* change, */
             )))
         }),
     )
